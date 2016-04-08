@@ -78,15 +78,16 @@ PetscErrorCode PFReadMatPowerData(PFDATA *pf,char *filename)
     fgets(line,MAXLINE,fp);
 
     if ((i >= bus_start_line) && (i < bus_end_line)) {
-      double gl,bl,vm,va,basekV;
-      int    bus_i,ide,area;
+      double gl,bl,vm,va,basekV,vmin,vmax;
+      int    bus_i,ide,area,zone;
       /* Bus data */
-      sscanf(line,"%d %d %lf %lf %lf %lf %d %lf %lf %lf",		\
+      sscanf(line,"%d %d %lf %lf %lf %lf %d %lf %lf %lf %d %lf %lf",		\
 	     &bus_i,&ide,&Pd,&Qd,&gl,	\
-	     &bl,&area,&vm,&va,&basekV);
+	     &bl,&area,&vm,&va,&basekV,&zone,&vmax,&vmin);
       Bus[busi].bus_i = bus_i; Bus[busi].ide = ide; Bus[busi].area = area;
       Bus[busi].gl = gl; Bus[busi].bl = bl;
       Bus[busi].vm = vm; Bus[busi].va = va; Bus[busi].basekV = basekV;
+      Bus[busi].vmin = vmin; Bus[busi].vmax = vmax;
       Bus[busi].internal_i = busi;
       busext2intmap[Bus[busi].bus_i] = busi;
 

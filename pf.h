@@ -23,6 +23,8 @@ struct _p_VERTEXDATA{
   PetscScalar 	bl; /* Reactive component of shunt admittance to ground */
   PetscInt 	area; /* Area number */
   PetscInt 	zone; /* Zone number */
+  PetscScalar   vmin; /* Minimum voltage threshold */
+  PetscScalar   vmax; /* Maximum voltage threshold */
   PetscScalar 	vm; /* Bus voltage magnitude; in pu */
   PetscScalar 	va; /* Bus voltage phase angle */
   PetscInt 	owner; /* Owner number */
@@ -114,6 +116,7 @@ struct _p_EDGEDATA{
   PetscInt	internal_i; /* Internal From Bus Number */
   PetscInt	internal_j; /* Internal To Bus Number */
   PetscScalar   yff[2],yft[2],ytf[2],ytt[2]; /* [G,B] */
+  PetscScalar   pf,qf,sf,pt,qt,st; /* The from and to end real, reactive, and apparent power flows (pu) */
 } PETSC_ATTRIBUTEALIGNED(sizeof(PetscScalar));
 
 typedef struct _p_EDGEDATA *EDGEDATA;

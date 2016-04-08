@@ -138,11 +138,20 @@ PetscErrorCode FormFunction(SNES snes,Vec X, Vec F,void *appctx)
 	  thetatf = thetat - thetaf;
 
 	  if (vfrom == v) {
-	    farr[offsetfrom]   += Gff*Vmf*Vmf + Vmf*Vmt*(Gft*PetscCosScalar(thetaft) + Bft*PetscSinScalar(thetaft));
-	    farr[offsetfrom+1] += -Bff*Vmf*Vmf + Vmf*Vmt*(-Bft*PetscCosScalar(thetaft) + Gft*PetscSinScalar(thetaft));
+	    branch->pf = Gff*Vmf*Vmf + Vmf*Vmt*(Gft*PetscCosScalar(thetaft) + Bft*PetscSinScalar(thetaft));
+	    branch->qf = -Bff*Vmf*Vmf + Vmf*Vmt*(-Bft*PetscCosScalar(thetaft) + Gft*PetscSinScalar(thetaft));
+	    branch->sf = PetscPowScalar(branch->pf*branch->pf + branch->qf*branch->qf,0.5);
+
+	    farr[offsetfrom]   += branch->pf;
+	    farr[offsetfrom+1] += branch->qf;
 	  } else {
-	    farr[offsetto]   += Gtt*Vmt*Vmt + Vmt*Vmf*(Gtf*PetscCosScalar(thetatf) + Btf*PetscSinScalar(thetatf));
-	    farr[offsetto+1] += -Btt*Vmt*Vmt + Vmt*Vmf*(-Btf*PetscCosScalar(thetatf) + Gtf*PetscSinScalar(thetatf));
+	    branch->pt = Gtt*Vmt*Vmt + Vmt*Vmf*(Gtf*PetscCosScalar(thetatf) + Btf*PetscSinScalar(thetatf));
+	    branch->qt = -Btt*Vmt*Vmt + Vmt*Vmf*(-Btf*PetscCosScalar(thetatf) + Gtf*PetscSinScalar(thetatf));
+	    branch->st = PetscPowScalar(branch->pt*branch->pt + branch->qt*branch->qt,0.5);
+
+
+	    farr[offsetto]   += branch->pt;
+	    farr[offsetto+1] += branch->qt;
 	  }
 	}
       } else if (key == 2) {
@@ -164,6 +173,25 @@ PetscErrorCode FormFunction(SNES snes,Vec X, Vec F,void *appctx)
       farr[offset+1] = xarr[offset+1] - bus->vm;
     }
   }
+
+#if defined DEBUG
+  EDGEDATA branch;
+  PetscScalar sf,st;
+  PetscInt    offsetd,key,eStart,eEnd;
+  ierr = DMNetworkGetEdgeRange(networkdm,&eStart,&eEnd);CHKERRQ(ierr);
+  for(e=eStart; e < eEnd; e++) {
+    ierr = DMNetworkGetComponentTypeOffset(networkdm,e,0,&key,&offsetd);CHKERRQ(ierr);
+    branch = (EDGEDATA)(arr+offsetd);
+    if(!branch->status) {
+      sf = st = 0.0;
+    } else {
+      sf = branch->sf*User->Sbase;
+      st = branch->st*User->Sbase;
+    }
+    ierr = PetscPrintf(PETSC_COMM_SELF,"%6d\t%6d\t%6.2f\t%6.2f\t%6.2f\t%6.2f\t%6.2f\t%6.2f\t%6.2f\t%2d\n",branch->fbus,branch->tbus,branch->pf,branch->qf,branch->sf,branch->pt,branch->qt,branch->st,branch->rateA,branch->status);CHKERRQ(ierr);
+  }
+#endif
+
   ierr = VecRestoreArrayRead(localX,&xarr);CHKERRQ(ierr);
   ierr = VecRestoreArray(localF,&farr);CHKERRQ(ierr);
   ierr = DMRestoreLocalVector(networkdm,&localX);CHKERRQ(ierr);
@@ -171,6 +199,121 @@ PetscErrorCode FormFunction(SNES snes,Vec X, Vec F,void *appctx)
   ierr = DMLocalToGlobalBegin(networkdm,localF,ADD_VALUES,F);CHKERRQ(ierr);
   ierr = DMLocalToGlobalEnd(networkdm,localF,ADD_VALUES,F);CHKERRQ(ierr);
   ierr = DMRestoreLocalVector(networkdm,&localF);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+#undef __FUNCT__
+#define __FUNCT__ "PrintOutput"
+PetscErrorCode PrintOutput(DM networkdm,Vec X,PetscScalar Sbase)
+{
+  PetscViewer    viewer;
+  PetscErrorCode ierr;
+  PetscMPIInt    size;
+  PetscInt       v,vStart,vEnd,e,eStart,eEnd;
+  const PetscScalar *xarr;
+  DMNetworkComponentGenericDataType *arr;
+  VERTEXDATA  bus=NULL;
+  EDGEDATA    branch=NULL;
+  PetscInt    numComps,offset,offsetd,j,key;
+  PetscScalar Vm,Va;
+  PetscScalar sf,st;
+
+  PetscFunctionBegin;
+  ierr = MPI_Comm_size(PETSC_COMM_WORLD,&size);CHKERRQ(ierr);
+  if(size > 1) {
+    SETERRQ(PETSC_COMM_SELF,0,"Cannot print power flow results in parallel\n");
+  }
+
+  ierr = PetscViewerASCIIOpen(PETSC_COMM_SELF,"results",&viewer);CHKERRQ(ierr);
+  ierr = PetscViewerASCIIPrintf(viewer,"Bus data\n");CHKERRQ(ierr);
+  ierr = PetscViewerASCIIPrintf(viewer,"Number\tType\tVm\tVa\tVmin\tVmax\n");CHKERRQ(ierr);
+
+  ierr = VecGetArrayRead(X,&xarr);CHKERRQ(ierr);
+  ierr = DMNetworkGetComponentDataArray(networkdm,&arr);CHKERRQ(ierr);
+
+  ierr = DMNetworkGetVertexRange(networkdm,&vStart,&vEnd);CHKERRQ(ierr);
+  for(v=vStart; v < vEnd; v++) {
+    ierr = DMNetworkGetNumComponents(networkdm,v,&numComps);CHKERRQ(ierr);
+    ierr = DMNetworkGetVariableOffset(networkdm,v,&offset);CHKERRQ(ierr);
+    for (j = 0; j < numComps; j++) {
+      ierr = DMNetworkGetComponentTypeOffset(networkdm,v,j,&key,&offsetd);CHKERRQ(ierr);
+      if (key == 1) {
+	Va = xarr[offset]*180/PETSC_PI;
+	Vm = xarr[offset+1];
+
+	bus = (VERTEXDATA)(arr+offsetd);
+
+	ierr = PetscViewerASCIIPrintf(viewer,"%6d\t%2d\t%6.4f\t%6.4f\t%6.4f\t%6.4f\n",bus->bus_i,bus->ide,Vm,Va,bus->vmin,bus->vmax);CHKERRQ(ierr);
+
+	if(bus->ide == REF_BUS) {
+	  /* Update branch flows for the reference bus only */
+	  PetscInt       nconnedges;
+	  const PetscInt *connedges;
+	  PetscInt      i,vfrom,vto,offsetfrom,offsetto;
+	  ierr = DMNetworkGetSupportingEdges(networkdm,v,&nconnedges,&connedges);CHKERRQ(ierr);
+	  for (i=0; i < nconnedges; i++) {
+	    EDGEDATA       branch;
+	    PetscInt       keye;
+	    PetscScalar    Gff,Bff,Gft,Bft,Gtf,Btf,Gtt,Btt;
+	    const PetscInt *cone;
+	    PetscScalar    Vmf,Vmt,thetaf,thetat,thetaft,thetatf;
+
+	    e = connedges[i];
+	    ierr = DMNetworkGetComponentTypeOffset(networkdm,e,0,&keye,&offsetd);CHKERRQ(ierr);
+	    branch = (EDGEDATA)(arr+offsetd);
+	    if (!branch->status) continue;
+	    Gff = branch->yff[0];
+	    Bff = branch->yff[1];
+	    Gft = branch->yft[0];
+	    Bft = branch->yft[1];
+	    Gtf = branch->ytf[0];
+	    Btf = branch->ytf[1];
+	    Gtt = branch->ytt[0];
+	    Btt = branch->ytt[1];
+	    
+	    ierr = DMNetworkGetConnectedNodes(networkdm,e,&cone);CHKERRQ(ierr);
+	    vfrom = cone[0];
+	    vto   = cone[1];
+	    
+	    ierr = DMNetworkGetVariableOffset(networkdm,vfrom,&offsetfrom);CHKERRQ(ierr);
+	    ierr = DMNetworkGetVariableOffset(networkdm,vto,&offsetto);CHKERRQ(ierr);
+
+	    thetaf = xarr[offsetfrom];
+	    Vmf     = xarr[offsetfrom+1];
+	    thetat = xarr[offsetto];
+	    Vmt     = xarr[offsetto+1];
+	    thetaft = thetaf - thetat;
+	    thetatf = thetat - thetaf;
+	    
+	    if (vfrom == v) {
+	      branch->pf = Gff*Vmf*Vmf + Vmf*Vmt*(Gft*PetscCosScalar(thetaft) + Bft*PetscSinScalar(thetaft));
+	      branch->qf = -Bff*Vmf*Vmf + Vmf*Vmt*(-Bft*PetscCosScalar(thetaft) + Gft*PetscSinScalar(thetaft));
+	      branch->sf = PetscPowScalar(branch->pf*branch->pf + branch->qf*branch->qf,0.5);
+	    }
+	  }
+	}
+      }
+    }
+  }
+
+  ierr = PetscViewerASCIIPrintf(viewer,"Line data\n");CHKERRQ(ierr);
+  ierr = PetscViewerASCIIPrintf(viewer,"From\tTo\tSfrom\tSto\tSmax\tStatus\n");CHKERRQ(ierr);
+
+  ierr = DMNetworkGetEdgeRange(networkdm,&eStart,&eEnd);CHKERRQ(ierr);
+  for(e=eStart; e < eEnd; e++) {
+    ierr = DMNetworkGetComponentTypeOffset(networkdm,e,0,&key,&offsetd);CHKERRQ(ierr);
+    branch = (EDGEDATA)(arr+offsetd);
+    if(!branch->status) {
+      sf = st = 0.0;
+    } else {
+      sf = branch->sf*Sbase;
+      st = branch->st*Sbase;
+    }
+    ierr = PetscViewerASCIIPrintf(viewer,"%6d\t%6d\t%6.2f\t%6.2f\t%6.2f\t%2d\n",branch->fbus,branch->tbus,sf,st,branch->rateA,branch->status);CHKERRQ(ierr);
+  }
+
+  ierr = VecRestoreArrayRead(X,&xarr);CHKERRQ(ierr);
+  ierr = PetscViewerDestroy(&viewer);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -575,6 +718,14 @@ int main(int argc,char ** argv)
   ierr = SNESSetFromOptions(snes);CHKERRQ(ierr);
 
   ierr = SNESSolve(snes,NULL,X);CHKERRQ(ierr);
+
+  SNESConvergedReason converged;
+  ierr = SNESGetConvergedReason(snes,&converged);CHKERRQ(ierr);
+  if(converged <= 0) {
+    SETERRQ(PETSC_COMM_SELF,0,"Power flow did not converge\n");
+  }
+
+  ierr = PrintOutput(networkdm,X,User.Sbase);CHKERRQ(ierr);
 
   ierr = VecDestroy(&X);CHKERRQ(ierr);
   ierr = VecDestroy(&F);CHKERRQ(ierr);
